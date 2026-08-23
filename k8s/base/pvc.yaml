@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dawatch-data
+  namespace: dawatch
+spec:
+  # ReadWriteOnce is correct here: exactly one pod writes the SQLite file at
+  # a time, enforced by the CronJob's concurrencyPolicy: Forbid.
+  #
+  # The backing StorageClass must be local-path or block storage. SQLite's
+  # advisory locking is unreliable over NFS and can corrupt the database.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

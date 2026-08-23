@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dawatch
+  namespace: dawatch
+  labels:
+    app.kubernetes.io/name: dawatch
+spec:
+  schedule: "0 9 * * *"
+  timeZone: "Etc/UTC"
+
+  concurrencyPolicy: Forbid
+
+  # If the controller was down at the scheduled minute, skip the run rather
+  # than start a stampede of catch-up jobs.
+  startingDeadlineSeconds: 300
+
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+  jobTemplate:
+    spec:
+      # Retries transient failures (exit 1). A configuration failure exits 2
+      # and is equally retried, so keep this low.
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+
+      # concurrencyPolicy: Forbid means a wedged run blocks every later one.
+      # A poll is seconds of work, so cap the whole job well under the daily
+      # interval and let the next schedule recover.
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: dawatch
+        spec:
+          restartPolicy: Never
+          # The job never talks to the Kubernetes API.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: dawatch
+              image: dawatch:dev
+              args: ["run"]
+              envFrom:
+                - configMapRef:
+                    name: dawatch-config
+                - secretRef:
+                    name: dawatch-secrets
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: dawatch-data
+            # readOnlyRootFilesystem is on, so anything writing to /tmp needs
+            # an explicit emptyDir.
+            - name: tmp
+              emptyDir: {}

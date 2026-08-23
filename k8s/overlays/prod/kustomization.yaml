@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dawatch
+
+resources:
+  - ../../base
+
+images:
+  # Pin by digest in a real deployment: a mutable tag makes a rollback
+  # ambiguous and lets an image change under you between runs.
+  - name: dawatch
+    newTag: "0.1.0"
+
+patches:
+  - path: patch-cronjob.yaml

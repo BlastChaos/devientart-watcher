@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dawatch
+  namespace: dawatch
+spec:
+  # Frequent enough to demo without waiting until tomorrow.
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: dawatch
+              # The image is side-loaded into kind, never pulled.
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DAWATCH_LOG_LEVEL
+                  value: "DEBUG"
+                - name: DAWATCH_ENV
+                  value: "dev"
+                # No Pushgateway in the kind cluster. An empty value selects
+                # the null sink, so runs stay quiet instead of warning on
+                # every flush.
+                - name: DAWATCH_PUSHGATEWAY_URL
+                  value: ""

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dawatch
+
+resources:
+  - ../../base
+
+images:
+  - name: dawatch
+    newTag: dev
+
+patches:
+  - path: patch-cronjob.yaml
+  # kind ships a local-path provisioner under the StorageClass name
+  # "standard". Local-path is exactly what SQLite needs.
+  - target:
+      kind: PersistentVolumeClaim
+      name: dawatch-data
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: standard

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dawatch-config
+  namespace: dawatch
+data:
+  DAWATCH_NTFY_URL: "https://ntfy.sh"
+  DAWATCH_DB_PATH: "/data/dawatch.db"
+  DAWATCH_ENV: "prod"
+  DAWATCH_LOG_LEVEL: "INFO"
+  DAWATCH_HTTP_TIMEOUT: "10.0"
+  DAWATCH_MAX_RETRIES: "3"
+  # Points at a Pushgateway the cluster is expected to already run. Set it
+  # to "" to disable metrics; a push failure is only logged, never fatal.
+  DAWATCH_PUSHGATEWAY_URL: "http://pushgateway.dawatch.svc.cluster.local:9091"
