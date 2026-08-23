@@ -41,35 +41,39 @@ class DeviantArtAuth:
         self._client_secret = client_secret
         self._cache = cache
         self._current: Token | None = None
+        self._force_refresh: bool = False
 
     def token(self) -> str:
         """Return a usable access token, fetching a new one only if needed."""
         now = datetime.now(UTC)
 
-        if self._current is not None and self._current.is_valid(now):
-            return self._current.access_token
+        if not self._force_refresh:
+            if self._current is not None and self._current.is_valid(now):
+                return self._current.access_token
 
-        cached = self._cache.load_token()
-        if cached is not None and cached.is_valid(now):
-            log.debug("token.cache_hit", expires_at=cached.expires_at.isoformat())
-            self._current = cached
-            return cached.access_token
+            cached = self._cache.load_token()
+            if cached is not None and cached.is_valid(now):
+                log.debug("token.cache_hit", expires_at=cached.expires_at.isoformat())
+                self._current = cached
+                return cached.access_token
 
         fresh = self._request_token(now)
         self._current = fresh
         self._cache.save_token(fresh)
+        self._force_refresh = False
         log.info("token.refreshed", expires_at=fresh.expires_at.isoformat())
         return fresh.access_token
 
     def invalidate(self) -> None:
-        """Drop the in-process token so the next call re-authenticates.
+        """Force the next call to re-authenticate, skipping all caches.
 
         Called when the API rejects a token we believed was live, which can
-        happen if DeviantArt revokes it early.
+        happen if DeviantArt revokes it early. This sets a flag that forces
+        the next token() call to bypass both in-process and persistent caches
+        and fetch a fresh token directly from the token endpoint.
         """
         self._current = None
-        # Also clear the cached token since it's been rejected
-        self._cache.save_token(Token(access_token="", expires_at=datetime.now(UTC)))
+        self._force_refresh = True
 
     def _request_token(self, now: datetime) -> Token:
         try:

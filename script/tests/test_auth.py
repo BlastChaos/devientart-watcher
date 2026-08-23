@@ -9,7 +9,7 @@ import time_machine
 from dawatch.auth import TOKEN_URL, DeviantArtAuth
 from dawatch.errors import AuthError
 from dawatch.models import Token
-from dawatch.store import InMemoryStore
+from dawatch.store import InMemoryStore, TokenCache
 
 NOW = datetime(2026, 8, 23, 12, 0, 0, tzinfo=UTC)
 
@@ -19,6 +19,24 @@ TOKEN_RESPONSE = {
     "token_type": "Bearer",
     "expires_in": 3600,
 }
+
+
+class SpyCache(TokenCache):
+    """Cache that tracks calls to save_token for test assertions."""
+
+    def __init__(self) -> None:
+        self._save_calls: int = 0
+        self._token: Token | None = None
+
+    def load_token(self) -> Token | None:
+        return self._token
+
+    def save_token(self, token: Token) -> None:
+        self._save_calls += 1
+        self._token = token
+
+    def save_count(self) -> int:
+        return self._save_calls
 
 
 @pytest.fixture
@@ -111,6 +129,22 @@ def test_invalidate_forces_a_new_token(auth: DeviantArtAuth) -> None:
     auth.token()
 
     assert route.call_count == 2
+
+
+@respx.mock
+@time_machine.travel(NOW, tick=False)
+def test_invalidate_does_not_write_to_cache() -> None:
+    """invalidate() must perform no store I/O so it is safe on retry paths."""
+    spy_cache = SpyCache()
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
+
+    with httpx.Client() as http:
+        auth = DeviantArtAuth(http, "cid", "csecret", spy_cache)
+        auth.token()
+        save_count_before = spy_cache.save_count()
+        auth.invalidate()
+
+    assert spy_cache.save_count() == save_count_before
 
 
 @respx.mock
