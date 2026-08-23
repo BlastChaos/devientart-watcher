@@ -45,7 +45,9 @@ def test_load_raises_config_error_when_credentials_missing(
     with pytest.raises(ConfigError) as exc_info:
         Settings.load()
 
-    assert "DEVIANTART_CLIENT_ID" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "DEVIANTART_CLIENT_ID" in message
+    assert "DAWATCH_DEVIANTART" not in message
 
 
 def test_secrets_are_not_exposed_by_repr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,3 +58,27 @@ def test_secrets_are_not_exposed_by_repr(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert "s3cret" not in rendered
     assert "abc123" not in rendered
+
+
+class TestEnvNameFor:
+    """Direct unit tests of the loc-to-env-var-name mapping.
+
+    ``test_load_raises_config_error_when_credentials_missing`` only ever
+    exercises the aliased-field branch. These tests pin down all three
+    branches individually so a future edit cannot silently regress one
+    without a failing test.
+    """
+
+    def test_aliased_field_returned_verbatim(self) -> None:
+        # DEVIANTART_CLIENT_ID is the alias pydantic reports in `loc` for
+        # `client_id`; it is not a key in `model_fields`, so it comes back
+        # unchanged rather than being coerced into a DAWATCH_-prefixed name.
+        assert Settings._env_name_for(("DEVIANTART_CLIENT_ID",)) == "DEVIANTART_CLIENT_ID"
+
+    def test_non_aliased_field_gets_dawatch_prefix(self) -> None:
+        # ntfy_topic has no validation_alias, so `loc` carries the field
+        # name itself, and the DAWATCH_ prefix is applied.
+        assert Settings._env_name_for(("ntfy_topic",)) == "DAWATCH_NTFY_TOPIC"
+
+    def test_empty_loc_returns_unknown_placeholder(self) -> None:
+        assert Settings._env_name_for(()) == "<unknown>"
