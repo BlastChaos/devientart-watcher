@@ -1,3 +1,4 @@
+import structlog
 from prometheus_client import CollectorRegistry
 
 from dawatch.metrics import NullSink, PushgatewaySink
@@ -67,7 +68,13 @@ def test_a_failing_push_does_not_raise() -> None:
     def explode(gateway: str, job: str, registry: CollectorRegistry) -> None:
         raise OSError("gateway unreachable")
 
-    sink = PushgatewaySink("http://gw:9091", push=explode)
-    sink.record_fetched(1)
+    with structlog.testing.capture_logs() as cap_logs:
+        sink = PushgatewaySink("http://gw:9091", push=explode)
+        sink.record_fetched(1)
 
-    sink.flush()  # must not raise
+        sink.flush()  # must not raise
+
+    failed_push_logs = [log for log in cap_logs if log["event"] == "metrics.push_failed"]
+    assert len(failed_push_logs) == 1
+    assert "error" in failed_push_logs[0]
+    assert "gateway unreachable" in failed_push_logs[0]["error"]
