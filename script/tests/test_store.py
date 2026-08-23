@@ -1,9 +1,11 @@
+import os
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from dawatch.errors import StoreError
 from dawatch.models import Deviation, Token
 from dawatch.store import InMemoryStore, SqliteStore
 
@@ -119,3 +121,69 @@ def test_in_memory_store_matches_sqlite_behaviour() -> None:
     loaded = store.load_token()
     assert loaded is not None
     assert loaded.access_token == "tok"
+
+
+def test_corrupt_file_raises_store_error(tmp_path: Path) -> None:
+    """Opening a corrupted database file raises StoreError."""
+    db_path = tmp_path / "corrupt.db"
+    # Write garbage bytes to the database file
+    db_path.write_bytes(b"This is not a valid SQLite database file")
+
+    with pytest.raises(StoreError):
+        SqliteStore(db_path)
+
+
+def test_unwritable_directory_raises_store_error(tmp_path: Path) -> None:
+    """Opening a store in a read-only directory raises StoreError."""
+    if os.geteuid() == 0:
+        pytest.skip("Cannot test permissions as root")
+
+    db_dir = tmp_path / "readonly"
+    db_dir.mkdir()
+    db_path = db_dir / "test.db"
+
+    # Create read-only directory
+    db_dir.chmod(0o444)
+    try:
+        with pytest.raises(StoreError):
+            SqliteStore(db_path)
+    finally:
+        # Restore permissions for cleanup
+        db_dir.chmod(0o755)
+
+
+def test_first_seen_at_preserved_on_reopen(tmp_path: Path) -> None:
+    """Reopening and re-marking a deviation preserves first_seen_at."""
+    db_path = tmp_path / "test.db"
+
+    # First store: mark the deviation
+    with SqliteStore(db_path) as first:
+        first.mark_seen(make_deviation(), notified=False)
+        first_timestamp = first.first_seen_at("ABC-123")
+        assert first_timestamp is not None
+
+    # Second store: re-mark the same deviation (simulating a retry)
+    with SqliteStore(db_path) as second:
+        second.mark_seen(make_deviation(), notified=True)
+        second_timestamp = second.first_seen_at("ABC-123")
+        assert second_timestamp == first_timestamp
+        # Verify that notified_at was updated
+        assert second.notified_at("ABC-123") is not None
+
+
+def test_in_memory_store_first_seen_at_preserved() -> None:
+    """InMemoryStore preserves first_seen_at when re-marking."""
+    store = InMemoryStore()
+
+    # Mark initially without notification
+    store.mark_seen(make_deviation(), notified=False)
+    first_timestamp = store.first_seen_at("ABC-123")
+    assert first_timestamp is not None
+    assert store.notified_at("ABC-123") is None
+
+    # Re-mark with notification
+    store.mark_seen(make_deviation(), notified=True)
+    second_timestamp = store.first_seen_at("ABC-123")
+    assert second_timestamp == first_timestamp
+    # Verify that notified_at was updated
+    assert store.notified_at("ABC-123") is not None
