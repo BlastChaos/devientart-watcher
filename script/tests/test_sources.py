@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+import structlog
 
 from dawatch.errors import FetchError
 from dawatch.sources import DailyDeviationsSource
@@ -88,3 +89,17 @@ def test_skips_a_single_malformed_result_rather_than_failing_the_run() -> None:
     deviations = DailyDeviationsSource(StubClient(payload)).fetch()
 
     assert [d.deviationid for d in deviations] == ["A"]
+
+
+def test_logs_diagnostic_context_when_skipping_malformed_result() -> None:
+    """Skipped row warnings include error detail and raw deviationid for diagnostics."""
+    payload = {"results": [{"deviationid": "id-123", "author": "not-an-object"}], "has_more": False}
+
+    with structlog.testing.capture_logs() as cap_logs:
+        DailyDeviationsSource(StubClient(payload)).fetch()
+
+    warning_logs = [log for log in cap_logs if log["event"] == "source.skipped_malformed_result"]
+    assert len(warning_logs) == 1
+    assert "error" in warning_logs[0]
+    assert "raw_id" in warning_logs[0]
+    assert warning_logs[0]["raw_id"] == "id-123"

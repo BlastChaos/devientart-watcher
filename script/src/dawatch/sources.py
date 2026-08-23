@@ -41,7 +41,7 @@ class DailyDeviationsSource:
         self._client = client
 
     def fetch(self, date: str | None = None) -> list[Deviation]:
-        """Return the day's deviations, newest feed first.
+        """Return the day's deviations from the API.
 
         Raises:
             FetchError: if ``date`` is malformed or the payload cannot be
@@ -61,10 +61,14 @@ class DailyDeviationsSource:
         for raw in raw_results:
             try:
                 deviations.append(Deviation.model_validate(raw))
-            except ValidationError:
+            except ValidationError as exc:
                 # One unusable row should not cost the user every other
                 # notification in the batch.
-                log.warning("source.skipped_malformed_result")
+                log.warning(
+                    "source.skipped_malformed_result",
+                    error=str(exc),
+                    raw_id=raw.get("deviationid"),
+                )
 
         log.info("source.fetched", count=len(deviations), date=date or "today")
         return deviations
