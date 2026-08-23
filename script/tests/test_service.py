@@ -251,6 +251,16 @@ def test_dry_run_does_not_seed_an_empty_store() -> None:
     assert store.is_empty() is True
 
 
+def test_dry_run_does_not_record_success() -> None:
+    """A dry run against a sick deployment must not silence the dead-job alarm."""
+    store = seeded_store()
+    service, _, _, metrics, _ = build([make_deviation("A")], store=store)
+
+    service.run(dry_run=True)
+
+    assert metrics.success_timestamp is None
+
+
 # --- metrics -------------------------------------------------------------
 
 
@@ -265,6 +275,17 @@ def test_records_metrics_for_a_successful_run() -> None:
     assert metrics.success_timestamp == 1000.0
     assert metrics.duration is not None
     assert metrics.flushed is True
+
+
+def test_seed_still_records_success() -> None:
+    """Seeding is a real run that did its job: establishing the baseline
+    legitimately notifies nothing, and is a success by the spec's own
+    definition."""
+    service, _, _, metrics, _ = build([make_deviation("A"), make_deviation("B")])
+
+    service.run()
+
+    assert metrics.success_timestamp == 1000.0
 
 
 def test_does_not_record_success_when_a_notification_failed() -> None:

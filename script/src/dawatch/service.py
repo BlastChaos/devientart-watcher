@@ -81,7 +81,9 @@ class WatchService:
 
             if seeding:
                 self._seed(new)
-                return self._finish(started, len(deviations), len(new), 0, 0, seeded=True)
+                return self._finish(
+                    started, len(deviations), len(new), 0, 0, seeded=True, dry_run=False
+                )
 
             if dry_run:
                 for deviation in new:
@@ -90,10 +92,14 @@ class WatchService:
                         deviationid=deviation.deviationid,
                         title=deviation.title,
                     )
-                return self._finish(started, len(deviations), len(new), 0, 0, seeded=False)
+                return self._finish(
+                    started, len(deviations), len(new), 0, 0, seeded=False, dry_run=True
+                )
 
             notified, errors = self._notify_all(new)
-            return self._finish(started, len(deviations), len(new), notified, errors, seeded=False)
+            return self._finish(
+                started, len(deviations), len(new), notified, errors, seeded=False, dry_run=False
+            )
         finally:
             self._metrics.record_duration(self._clock() - started)
             self._metrics.flush()
@@ -148,13 +154,16 @@ class WatchService:
         notified: int,
         errors: int,
         seeded: bool,
+        dry_run: bool,
     ) -> RunResult:
         result = RunResult(
             fetched=fetched, new=new, notified=notified, errors=errors, seeded=seeded
         )
-        if errors == 0:
+        if errors == 0 and not dry_run:
             # Only a clean run resets the staleness clock, so a run that is
-            # half-failing does not look healthy to the alert.
+            # half-failing does not look healthy to the alert. A dry run did
+            # no real work either, so it must not silence the dead-job alarm
+            # for the debugging session that is most likely to trigger one.
             self._metrics.record_success(self._clock())
 
         self._metrics.record_notified(notified)
