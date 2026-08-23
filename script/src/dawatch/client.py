@@ -19,6 +19,9 @@ API_BASE = "https://www.deviantart.com/api/v1/oauth2"
 API_VERSION = "20240701"
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# Clamp Retry-After to prevent sleep bursts that would hold a CronJob slot.
+# The Kubernetes pod's startingDeadlineSeconds is 300 (5 minutes).
+MAX_RETRY_AFTER_SECONDS = 60
 
 log = structlog.get_logger(__name__)
 
@@ -48,8 +51,9 @@ class DeviantArtClient:
         url = f"{API_BASE}/{path.lstrip('/')}"
         reauthed = False
         last_problem = "unknown"
+        attempt = 0
 
-        for attempt in range(self._max_retries):
+        while attempt < self._max_retries:
             try:
                 response = self._http.get(
                     url,
@@ -64,6 +68,7 @@ class DeviantArtClient:
                 last_problem = type(exc).__name__
                 log.warning("fetch.transport_error", attempt=attempt + 1, error=last_problem)
                 self._wait(attempt, None)
+                attempt += 1
                 continue
 
             status = response.status_code
@@ -86,6 +91,7 @@ class DeviantArtClient:
             last_problem = f"HTTP {status}"
             log.warning("fetch.retryable_status", attempt=attempt + 1, status=status)
             self._wait(attempt, response.headers.get("Retry-After"))
+            attempt += 1
 
         raise FetchError(f"GET {path} failed after {self._max_retries} attempts: {last_problem}")
 
@@ -93,7 +99,8 @@ class DeviantArtClient:
         """Sleep before the next attempt, preferring the server's own advice."""
         if retry_after is not None:
             try:
-                self._sleep(float(retry_after))
+                delay = max(0.0, min(float(retry_after), MAX_RETRY_AFTER_SECONDS))
+                self._sleep(delay)
                 return
             except ValueError:
                 # Retry-After may be an HTTP-date; fall back to backoff.

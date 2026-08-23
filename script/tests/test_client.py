@@ -162,3 +162,62 @@ def test_malformed_json_raises_fetch_error(client: DeviantArtClient) -> None:
 
     with pytest.raises(FetchError):
         client.get_json("browse/dailydeviations")
+
+
+@respx.mock
+def test_401_on_final_attempt_still_retries_with_fresh_token(auth: StubAuth) -> None:
+    """A 401 on the last attempt should still issue a retried request with the new token."""
+    route = respx.get(FEED_URL).mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(401),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    with httpx.Client() as http:
+        client = DeviantArtClient(http, auth, max_retries=2, sleep=lambda _: None)
+        client.get_json("browse/dailydeviations")
+
+    # Should make exactly 3 calls: initial, retry after 500, retry after 401
+    assert route.call_count == 3
+    assert route.calls[2].request.headers["Authorization"] == "Bearer token-2"
+
+
+@respx.mock
+def test_second_401_is_not_retried_and_names_the_401(auth: StubAuth) -> None:
+    """A 401 that survives re-authentication is a credentials fault, not a retry."""
+    route = respx.get(FEED_URL).mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(401),
+            httpx.Response(401),
+        ]
+    )
+
+    with httpx.Client() as http:
+        client = DeviantArtClient(http, auth, max_retries=2, sleep=lambda _: None)
+        with pytest.raises(FetchError) as exc_info:
+            client.get_json("browse/dailydeviations")
+
+    assert route.call_count == 3
+    assert "401" in str(exc_info.value)
+
+
+@respx.mock
+def test_retry_after_is_clamped_to_max(auth: StubAuth) -> None:
+    """Very large Retry-After values should be clamped to MAX_RETRY_AFTER_SECONDS."""
+    delays: list[float] = []
+    respx.get(FEED_URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "999999"}),
+            httpx.Response(200, json={}),
+        ]
+    )
+
+    with httpx.Client() as http:
+        client = DeviantArtClient(http, auth, max_retries=3, sleep=delays.append)
+        client.get_json("browse/dailydeviations")
+
+    # Should be clamped to 60, not 999999
+    assert delays == [60.0]
