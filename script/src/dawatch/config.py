@@ -45,9 +45,12 @@ class Settings(BaseSettings):
         """Build settings from the environment.
 
         Raises:
-            ConfigError: if any required value is missing or malformed. The
-                message names the offending variables so an operator can fix
-                the deployment without reading source.
+            ConfigError: if any required value is missing or malformed, or if
+                the ``.env`` file exists but cannot be read (e.g. wrong
+                permissions on a mounted secret). The message names the
+                offending variables in the first case, and the file plus the
+                underlying OS error in the second, so an operator can fix the
+                deployment without reading source.
         """
         try:
             return cls()  # type: ignore[call-arg]
@@ -56,6 +59,8 @@ class Settings(BaseSettings):
             raise ConfigError(
                 f"Invalid configuration. Check these environment variables: {', '.join(names)}"
             ) from exc
+        except OSError as exc:
+            raise ConfigError(f"Cannot read configuration file '.env': {exc}") from exc
 
     @classmethod
     def _env_name_for(cls, loc: tuple[int | str, ...]) -> str:

@@ -150,3 +150,38 @@ def test_doctor_reports_bad_credentials(env: Path, capsys: pytest.CaptureFixture
 
     assert main(["doctor"]) == 1
     assert "FAIL" in capsys.readouterr().out
+
+
+@respx.mock
+def test_doctor_reports_unreachable_api(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The token endpoint is up but the API itself cannot be reached.
+
+    Distinct from test_doctor_reports_bad_credentials: token() succeeds, so
+    this exercises doctor's own /placebo httpx.HTTPError branch rather than
+    auth's.
+    """
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
+    respx.get(PLACEBO_URL).mock(side_effect=httpx.ConnectError("connection refused"))
+
+    assert main(["doctor"]) == 1
+
+    out = capsys.readouterr().out
+    assert "FAIL" in out
+    assert "api" in out
+    assert "ConnectError" in out
+
+
+@respx.mock
+def test_doctor_reports_unreachable_pushgateway(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DAWATCH_PUSHGATEWAY_URL", "https://pushgateway.test")
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
+    respx.get(PLACEBO_URL).mock(return_value=httpx.Response(200, json={"status": "success"}))
+    respx.get("https://pushgateway.test").mock(return_value=httpx.Response(503))
+
+    assert main(["doctor"]) == 1
+
+    out = capsys.readouterr().out
+    assert "FAIL" in out
+    assert "pushgateway" in out

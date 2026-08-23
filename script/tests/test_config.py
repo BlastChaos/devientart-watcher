@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from dawatch.config import Settings
@@ -48,6 +51,41 @@ def test_load_raises_config_error_when_credentials_missing(
     message = str(exc_info.value)
     assert "DEVIANTART_CLIENT_ID" in message
     assert "DAWATCH_DEVIANTART" not in message
+
+
+def test_unreadable_env_file_raises_config_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unreadable .env (e.g. a misconfigured secret mount) must surface as
+    a ConfigError, not a raw OSError.
+
+    load()'s own docstring promises ConfigError for anything that keeps
+    configuration from being built, and cli.py maps ConfigError to exit 2
+    specifically because a bad config will never succeed on retry. Without
+    this, an unreadable .env escapes as an uncaught PermissionError, which
+    cli.py's outer DawatchError handler does not catch either, and the
+    process would exit non-2 -- telling the CronJob's backoff to retry a
+    failure that retrying can never fix.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root ignores the permission bit; the repro would not fail")
+
+    for key, value in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("DAWATCH_LOG_LEVEL=DEBUG\n")
+    env_file.chmod(0o000)
+
+    try:
+        with pytest.raises(ConfigError) as exc_info:
+            Settings.load()
+    finally:
+        env_file.chmod(0o644)  # restore so tmp_path cleanup can remove it
+
+    message = str(exc_info.value)
+    assert ".env" in message
+    assert "Permission" in message
 
 
 def test_secrets_are_not_exposed_by_repr(monkeypatch: pytest.MonkeyPatch) -> None:
