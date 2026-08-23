@@ -1,0 +1,91 @@
+"""Notification delivery.
+
+ntfy carries the message body as the request body and its metadata as
+headers. HTTP headers are latin-1, so any non-ASCII text is escaped before
+it goes into a header value.
+"""
+
+from typing import Protocol
+
+import httpx
+import structlog
+
+from dawatch.errors import NotifyError
+from dawatch.models import Deviation
+
+log = structlog.get_logger(__name__)
+
+
+def _header_safe(value: str) -> str:
+    """Make a string safe for an HTTP header value.
+
+    Non-ASCII characters are backslash-escaped rather than dropped, so a
+    title in Japanese still tells the reader something.
+    """
+    return value.encode("ascii", "backslashreplace").decode("ascii")
+
+
+class Notifier(Protocol):
+    def send(self, deviation: Deviation) -> None: ...
+
+
+class NtfyNotifier:
+    """Publishes one notification per deviation to an ntfy topic."""
+
+    def __init__(self, http: httpx.Client, base_url: str, topic: str) -> None:
+        self._http = http
+        self._url = f"{base_url.rstrip('/')}/{topic}"
+
+    def send(self, deviation: Deviation) -> None:
+        """Publish a single deviation.
+
+        Raises:
+            NotifyError: if the topic could not be reached or refused the
+                message. The caller leaves the deviation unseen so the next
+                run retries it.
+        """
+        headers = {
+            "X-Title": _header_safe(deviation.title),
+            "X-Tags": "art",
+            "X-Priority": "default",
+        }
+        if deviation.url:
+            headers["X-Click"] = deviation.url
+        if deviation.image_url:
+            headers["X-Attach"] = deviation.image_url
+
+        body = f"New Daily Deviation by {deviation.author_name}"
+
+        try:
+            response = self._http.post(self._url, content=body.encode(), headers=headers)
+        except httpx.HTTPError as exc:
+            raise NotifyError(
+                f"Could not reach ntfy for {deviation.deviationid}: {type(exc).__name__}"
+            ) from exc
+
+        if response.status_code != httpx.codes.OK:
+            raise NotifyError(
+                f"ntfy refused {deviation.deviationid} with HTTP {response.status_code}"
+            )
+
+        log.info("notify.sent", deviationid=deviation.deviationid, title=deviation.title)
+
+
+class ConsoleNotifier:
+    """Prints instead of sending. Used by --dry-run."""
+
+    def send(self, deviation: Deviation) -> None:
+        print(f"[dry-run] {deviation.title} by {deviation.author_name} -> {deviation.url or '-'}")
+
+
+class RecordingNotifier:
+    """Test double that records sends and can be told to fail for given ids."""
+
+    def __init__(self, fail_ids: set[str] | None = None) -> None:
+        self.sent: list[Deviation] = []
+        self._fail_ids = fail_ids or set()
+
+    def send(self, deviation: Deviation) -> None:
+        if deviation.deviationid in self._fail_ids:
+            raise NotifyError(f"forced failure for {deviation.deviationid}")
+        self.sent.append(deviation)
