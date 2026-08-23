@@ -5,6 +5,7 @@ namespace: dawatch
 
 resources:
   - ../../base
+  - ../../observability
 
 images:
   - name: dawatch
