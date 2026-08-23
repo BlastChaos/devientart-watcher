@@ -23,6 +23,16 @@ def test_redaction_is_case_insensitive_and_matches_substrings() -> None:
     assert result["DA_CLIENT_SECRET"] == "***REDACTED***"
 
 
+def test_redacts_secret_shaped_keys() -> None:
+    event = {"webhook_secret": "abc", "api_secret": "def", "shared_secret": "ghi"}
+
+    result = redact_secrets(None, "info", event)
+
+    assert result["webhook_secret"] == "***REDACTED***"
+    assert result["api_secret"] == "***REDACTED***"
+    assert result["shared_secret"] == "***REDACTED***"
+
+
 def test_leaves_innocuous_keys_untouched() -> None:
     event = {"event": "fetched", "count": 7, "deviationid": "ABC-123"}
 

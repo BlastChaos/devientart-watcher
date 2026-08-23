@@ -14,7 +14,7 @@ import structlog
 from dawatch.config import Settings
 
 SENSITIVE_KEYS = frozenset(
-    {"access_token", "client_secret", "client_id", "authorization", "token", "password"}
+    {"access_token", "secret", "client_id", "authorization", "token", "password"}
 )
 
 REDACTED = "***REDACTED***"
