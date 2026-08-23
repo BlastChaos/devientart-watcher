@@ -19,7 +19,7 @@ def isolate_from_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 
 @pytest.fixture(autouse=True)
-def reset_structlog() -> Generator[None, None, None]:
+def reset_structlog() -> Generator[None]:
     """Reset structlog to a sane default after each test.
 
     test_logging.py's test_configure_logging_emits_json_in_prod calls

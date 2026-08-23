@@ -22,7 +22,7 @@ DEVIATION = Deviation.model_validate(
 
 
 @pytest.fixture
-def notifier() -> Generator[NtfyNotifier, None, None]:
+def notifier() -> Generator[NtfyNotifier]:
     with httpx.Client() as http:
         yield NtfyNotifier(http, "https://ntfy.sh", "my-topic")
 

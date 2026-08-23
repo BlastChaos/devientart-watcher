@@ -28,7 +28,7 @@ def auth() -> StubAuth:
 
 
 @pytest.fixture
-def client(auth: StubAuth) -> Generator[DeviantArtClient, None, None]:
+def client(auth: StubAuth) -> Generator[DeviantArtClient]:
     """No real sleeping: retry tests must not take seconds of wall clock."""
     with httpx.Client() as http:
         yield DeviantArtClient(http, auth, max_retries=3, sleep=lambda _: None)
