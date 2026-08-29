@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     client_id: SecretStr = Field(validation_alias="DEVIANTART_CLIENT_ID")
     client_secret: SecretStr = Field(validation_alias="DEVIANTART_CLIENT_SECRET")
 
+    # Optional: the store may already hold a rotated token, and `dawatch login`
+    # runs before one exists at all. Ours, so it takes the DAWATCH_ prefix.
+    refresh_token: SecretStr | None = None
+
     ntfy_url: str = "https://ntfy.sh"
     ntfy_topic: str
 

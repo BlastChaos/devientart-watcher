@@ -120,3 +120,25 @@ class TestEnvNameFor:
 
     def test_empty_loc_returns_unknown_placeholder(self) -> None:
         assert Settings._env_name_for(()) == "<unknown>"
+
+
+def test_reads_the_refresh_token_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("DAWATCH_REFRESH_TOKEN", "refresh-abc")
+
+    settings = Settings.load()
+
+    assert settings.refresh_token is not None
+    assert settings.refresh_token.get_secret_value() == "refresh-abc"
+
+
+def test_refresh_token_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Absent is legal: the store may already hold a rotated token.
+
+    It is also legal for `dawatch login`, which runs before one exists at all.
+    """
+    for key, value in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    assert Settings.load().refresh_token is None
