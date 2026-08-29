@@ -5,11 +5,10 @@ import pytest
 import respx
 
 from dawatch.auth import TOKEN_URL
-from dawatch.cli import main
+from dawatch.cli import EXIT_CONFIG, EXIT_FAILURE, main
 from dawatch.client import API_BASE
 
-FEED_URL = f"{API_BASE}/browse/dailydeviations"
-PLACEBO_URL = f"{API_BASE}/placebo"
+FEED_URL = f"{API_BASE}/browse/deviantsyouwatch"
 NTFY_URL = "https://ntfy.test/my-topic"
 
 TOKEN_RESPONSE = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
@@ -32,6 +31,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("DEVIANTART_CLIENT_ID", "cid")
     monkeypatch.setenv("DEVIANTART_CLIENT_SECRET", "csecret")
     monkeypatch.setenv("DAWATCH_NTFY_TOPIC", "my-topic")
+    monkeypatch.setenv("DAWATCH_REFRESH_TOKEN", "seed-refresh")
     monkeypatch.setenv("DAWATCH_NTFY_URL", "https://ntfy.test")
     monkeypatch.setenv("DAWATCH_DB_PATH", str(tmp_path / "dawatch.db"))
     monkeypatch.setenv("DAWATCH_ENV", "prod")
@@ -123,20 +123,60 @@ def test_no_seed_notifies_on_a_fresh_store(env: Path) -> None:
     assert ntfy.call_count == 1
 
 
+def test_date_flag_is_rejected(env: Path) -> None:
+    """The watch feed has no date parameter, so the flag no longer exists.
+
+    argparse exits 2 for an unknown flag, which is the code this application
+    already uses for a configuration failure.
+    """
+    with pytest.raises(SystemExit) as exc_info:
+        main(["run", "--date", "2026-08-01"])
+
+    assert exc_info.value.code == EXIT_CONFIG
+
+
 @respx.mock
-def test_date_is_forwarded_to_the_api(env: Path) -> None:
+def test_expired_refresh_token_exits_config_not_failure(env: Path) -> None:
+    """Exit 2 stops backoffLimit retrying a token dead for three months."""
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
+
+    assert main(["run"]) == EXIT_CONFIG
+
+
+@respx.mock
+def test_a_transient_token_failure_still_exits_1(env: Path) -> None:
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(503))
+
+    assert main(["run"]) == EXIT_FAILURE
+
+
+@respx.mock
+def test_run_requests_the_watch_feed(env: Path) -> None:
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
     feed = respx.get(FEED_URL).mock(return_value=httpx.Response(200, json=FEED_RESPONSE))
 
-    main(["run", "--date", "2026-08-01"])
+    main(["run"])
 
-    assert feed.calls.last.request.url.params["date"] == "2026-08-01"
+    assert feed.called
+    assert feed.calls.last.request.url.params["limit"] == "50"
+
+
+@respx.mock
+def test_doctor_reports_an_insufficient_scope(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A wrong scope must fail here, not silently at the next scheduled run."""
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
+    respx.get(FEED_URL).mock(return_value=httpx.Response(403))
+
+    assert main(["doctor"]) != 0
+    assert "scope" in capsys.readouterr().out
 
 
 @respx.mock
 def test_doctor_reports_healthy(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
-    respx.get(PLACEBO_URL).mock(return_value=httpx.Response(200, json={"status": "success"}))
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, json={"status": "success"}))
 
     assert main(["doctor"]) == 0
 
@@ -161,7 +201,7 @@ def test_doctor_reports_unreachable_api(env: Path, capsys: pytest.CaptureFixture
     auth's.
     """
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
-    respx.get(PLACEBO_URL).mock(side_effect=httpx.ConnectError("connection refused"))
+    respx.get(FEED_URL).mock(side_effect=httpx.ConnectError("connection refused"))
 
     assert main(["doctor"]) == 1
 
@@ -177,7 +217,7 @@ def test_doctor_reports_unreachable_pushgateway(
 ) -> None:
     monkeypatch.setenv("DAWATCH_PUSHGATEWAY_URL", "https://pushgateway.test")
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
-    respx.get(PLACEBO_URL).mock(return_value=httpx.Response(200, json={"status": "success"}))
+    respx.get(FEED_URL).mock(return_value=httpx.Response(200, json={"status": "success"}))
     respx.get("https://pushgateway.test").mock(return_value=httpx.Response(503))
 
     assert main(["doctor"]) == 1

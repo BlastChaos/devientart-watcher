@@ -27,7 +27,7 @@ from dawatch.auth import TOKEN_URL
 from dawatch.cli import main
 from dawatch.client import API_BASE
 
-FEED_URL = f"{API_BASE}/browse/dailydeviations"
+FEED_URL = f"{API_BASE}/browse/deviantsyouwatch"
 
 TOKEN_RESPONSE = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
 
@@ -49,6 +49,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("DEVIANTART_CLIENT_ID", "cid")
     monkeypatch.setenv("DEVIANTART_CLIENT_SECRET", "csecret")
     monkeypatch.setenv("DAWATCH_NTFY_TOPIC", "my-topic")
+    monkeypatch.setenv("DAWATCH_REFRESH_TOKEN", "seed-refresh")
     monkeypatch.setenv("DAWATCH_NTFY_URL", "https://ntfy.test")
     monkeypatch.setenv("DAWATCH_DB_PATH", str(tmp_path / "dawatch.db"))
     monkeypatch.setenv("DAWATCH_ENV", "prod")
