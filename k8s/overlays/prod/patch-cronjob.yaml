@@ -4,7 +4,7 @@ metadata:
   name: dawatch
   namespace: dawatch
 spec:
-  schedule: "0 9 * * *"
+  schedule: "*/5 * * * *"
   jobTemplate:
     spec:
       template:
