@@ -6,7 +6,7 @@ metadata:
 spec:
   # Hourly suits a watch feed: artists post through the day, and the paging
   # rule makes a run with nothing new cost exactly one request.
-  schedule: "0 * * * *"
+  schedule: "*/5 * * * *"
   jobTemplate:
     spec:
       template:

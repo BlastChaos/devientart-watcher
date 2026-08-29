@@ -20,10 +20,8 @@ spec:
 
   jobTemplate:
     spec:
-      # Retries transient failures (exit 1). A configuration failure exits 2
-      # and is equally retried, so keep this low.
-      backoffLimit: 2
-      ttlSecondsAfterFinished: 3600
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 1800
 
       # concurrencyPolicy: Forbid means a wedged run blocks every later one.
       # A poll is seconds of work, so cap the whole job well under the daily
