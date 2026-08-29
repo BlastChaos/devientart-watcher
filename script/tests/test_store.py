@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -187,3 +188,103 @@ def test_in_memory_store_first_seen_at_preserved() -> None:
     assert second_timestamp == first_timestamp
     # Verify that notified_at was updated
     assert store.notified_at("ABC-123") is not None
+
+
+def test_refresh_token_round_trips(tmp_path: Path) -> None:
+    with SqliteStore(tmp_path / "db.sqlite") as store:
+        assert store.load_refresh_token() is None
+        store.save_refresh_token("refresh-abc")
+        assert store.load_refresh_token() == "refresh-abc"
+
+
+def test_refresh_token_survives_reopen(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite"
+    with SqliteStore(db) as store:
+        store.save_refresh_token("refresh-abc")
+    with SqliteStore(db) as reopened:
+        assert reopened.load_refresh_token() == "refresh-abc"
+
+
+def test_saving_an_access_token_preserves_the_refresh_token(tmp_path: Path) -> None:
+    """The two credentials have independent lifecycles.
+
+    An access token is replaced hourly; the refresh token must not be
+    collaterally erased when that happens.
+    """
+    with SqliteStore(tmp_path / "db.sqlite") as store:
+        store.save_refresh_token("refresh-abc")
+        store.save_token(Token(access_token="access-xyz", expires_at=NOW + timedelta(hours=1)))
+
+        assert store.load_refresh_token() == "refresh-abc"
+        loaded = store.load_token()
+        assert loaded is not None
+        assert loaded.access_token == "access-xyz"
+
+
+def test_migrates_a_database_created_before_the_refresh_column(tmp_path: Path) -> None:
+    """An existing PVC has a token_cache without refresh_token.
+
+    CREATE TABLE IF NOT EXISTS will not add the column, so opening the store
+    must add it. Without this, every deployment with an existing volume breaks
+    on the first query.
+    """
+    db = tmp_path / "db.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE token_cache (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            access_token TEXT NOT NULL,
+            expires_at   TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with SqliteStore(db) as store:
+        assert store.load_refresh_token() is None
+        store.save_refresh_token("refresh-abc")
+        assert store.load_refresh_token() == "refresh-abc"
+
+
+def test_migration_preserves_an_existing_access_token(tmp_path: Path) -> None:
+    """Migrating a live PVC must not discard the token already cached there."""
+    db = tmp_path / "db.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE token_cache (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            access_token TEXT NOT NULL,
+            expires_at   TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO token_cache (id, access_token, expires_at) VALUES (1, ?, ?)",
+        ("existing-access", (NOW + timedelta(hours=1)).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+    with SqliteStore(db) as store:
+        loaded = store.load_token()
+        assert loaded is not None
+        assert loaded.access_token == "existing-access"
+        assert store.load_refresh_token() is None
+
+
+def test_migration_is_idempotent_on_a_fresh_database(tmp_path: Path) -> None:
+    db = tmp_path / "db.sqlite"
+    with SqliteStore(db):
+        pass
+    with SqliteStore(db) as store:
+        assert store.load_refresh_token() is None
+
+
+def test_in_memory_store_round_trips_a_refresh_token() -> None:
+    store = InMemoryStore()
+    assert store.load_refresh_token() is None
+    store.save_refresh_token("refresh-abc")
+    assert store.load_refresh_token() == "refresh-abc"

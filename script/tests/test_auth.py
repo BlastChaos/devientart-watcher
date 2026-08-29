@@ -27,6 +27,7 @@ class SpyCache(TokenCache):
     def __init__(self) -> None:
         self._save_calls: int = 0
         self._token: Token | None = None
+        self._refresh_token: str | None = None
 
     def load_token(self) -> Token | None:
         return self._token
@@ -37,6 +38,12 @@ class SpyCache(TokenCache):
 
     def save_count(self) -> int:
         return self._save_calls
+
+    def load_refresh_token(self) -> str | None:
+        return self._refresh_token
+
+    def save_refresh_token(self, refresh_token: str) -> None:
+        self._refresh_token = refresh_token
 
 
 @pytest.fixture

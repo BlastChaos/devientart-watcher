@@ -1,4 +1,4 @@
-"""Persistent state: which deviations were seen, and the cached access token.
+"""Persistent state: which deviations were seen, and the cached tokens.
 
 SQLite is used through the standard library. WAL mode plus a busy timeout
 makes concurrent access safe on local storage. The database must never live
@@ -27,9 +27,10 @@ CREATE TABLE IF NOT EXISTS seen_deviations (
 );
 
 CREATE TABLE IF NOT EXISTS token_cache (
-    id           INTEGER PRIMARY KEY CHECK (id = 1),
-    access_token TEXT NOT NULL,
-    expires_at   TEXT NOT NULL
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    access_token  TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    refresh_token TEXT
 );
 """
 
@@ -60,11 +61,20 @@ class SeenStore(Protocol):
 
 @runtime_checkable
 class TokenCache(Protocol):
-    """Persists an access token across short-lived process runs."""
+    """Persists tokens across short-lived process runs.
+
+    The two credentials have separate lifecycles: an access token carries an
+    expiry the code checks every run, while a refresh token lasts three months
+    and nothing tracks it. They are stored and replaced independently.
+    """
 
     def load_token(self) -> Token | None: ...
 
     def save_token(self, token: Token) -> None: ...
+
+    def load_refresh_token(self) -> str | None: ...
+
+    def save_refresh_token(self, refresh_token: str) -> None: ...
 
 
 class SqliteStore:
@@ -80,6 +90,7 @@ class SqliteStore:
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(SCHEMA)
+            self._migrate()
         except (OSError, sqlite3.Error) as exc:
             raise StoreError(f"Cannot open database at {self._db_path}: {exc}") from exc
 
@@ -96,6 +107,17 @@ class SqliteStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    def _migrate(self) -> None:
+        """Add columns that post-date the original schema.
+
+        SCHEMA uses CREATE TABLE IF NOT EXISTS, so a database created by an
+        earlier version keeps its original columns forever. The new column is
+        nullable, so there is nothing to backfill and nothing to lose.
+        """
+        columns = {str(row["name"]) for row in self._conn.execute("PRAGMA table_info(token_cache)")}
+        if "refresh_token" not in columns:
+            self._conn.execute("ALTER TABLE token_cache ADD COLUMN refresh_token TEXT")
 
     def has_seen(self, deviationid: str) -> bool:
         with _store_errors("check seen status"):
@@ -185,6 +207,33 @@ class SqliteStore:
                 (token.access_token, token.expires_at.isoformat()),
             )
 
+    def load_refresh_token(self) -> str | None:
+        with _store_errors("load refresh token"):
+            row = self._conn.execute(
+                "SELECT refresh_token FROM token_cache WHERE id = 1"
+            ).fetchone()
+            if row is None or row["refresh_token"] is None:
+                return None
+            return str(row["refresh_token"])
+
+    def save_refresh_token(self, refresh_token: str) -> None:
+        """Store the refresh token, creating the row if no access token exists.
+
+        The placeholder access token is deliberately already expired, so a
+        later load_token() reports it unusable and triggers a refresh rather
+        than sending an empty bearer token.
+        """
+        with _store_errors("save refresh token"):
+            self._conn.execute(
+                """
+                INSERT INTO token_cache (id, access_token, expires_at, refresh_token)
+                VALUES (1, '', '1970-01-01T00:00:00+00:00', ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    refresh_token = excluded.refresh_token
+                """,
+                (refresh_token,),
+            )
+
 
 class InMemoryStore:
     """Non-persistent test double with the same semantics as SqliteStore."""
@@ -193,6 +242,7 @@ class InMemoryStore:
         # Map deviationid -> (first_seen_at, notified_at)
         self._seen: dict[str, tuple[str, str | None]] = {}
         self._token: Token | None = None
+        self._refresh_token: str | None = None
 
     def has_seen(self, deviationid: str) -> bool:
         return deviationid in self._seen
@@ -227,3 +277,9 @@ class InMemoryStore:
 
     def save_token(self, token: Token) -> None:
         self._token = token
+
+    def load_refresh_token(self) -> str | None:
+        return self._refresh_token
+
+    def save_refresh_token(self, refresh_token: str) -> None:
+        self._refresh_token = refresh_token
