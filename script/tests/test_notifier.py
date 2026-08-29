@@ -188,3 +188,48 @@ def test_already_encoded_url_is_not_double_encoded(notifier: NtfyNotifier) -> No
 
     sent = route.calls[0].request
     assert sent.headers["X-Click"] == "https://www.deviantart.com/user/art/Caf%C3%A9-123"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "title",
+    ["Sunset ", " Sunset", "Sun\nset", "Sunset\r\n", "Sun\r\nset", "\tSunset\t"],
+)
+def test_header_values_never_carry_stray_whitespace(notifier: NtfyNotifier, title: str) -> None:
+    """h11 rejects a header value with edge whitespace or a line break."""
+    route = respx.post(TOPIC_URL).mock(return_value=httpx.Response(200, json={}))
+
+    notifier.send(Deviation.model_validate({"deviationid": "X", "title": title}))
+
+    value = route.calls.last.request.headers["X-Title"]
+    assert value == value.strip()
+    assert not any(c in value for c in "\r\n")
+
+
+@respx.mock
+def test_omits_title_header_when_the_title_is_only_whitespace(notifier: NtfyNotifier) -> None:
+    """An empty header value is refused by ntfy, so send no header at all."""
+    route = respx.post(TOPIC_URL).mock(return_value=httpx.Response(200, json={}))
+
+    notifier.send(Deviation.model_validate({"deviationid": "X", "title": "  \n "}))
+
+    assert "X-Title" not in route.calls.last.request.headers
+
+
+@respx.mock
+def test_url_headers_survive_surrounding_whitespace(notifier: NtfyNotifier) -> None:
+    route = respx.post(TOPIC_URL).mock(return_value=httpx.Response(200, json={}))
+
+    notifier.send(
+        Deviation.model_validate(
+            {
+                "deviationid": "X",
+                "url": " https://www.deviantart.com/a/art/b\n",
+                "preview": {"src": "https://images.invalid/p.jpg\n"},
+            }
+        )
+    )
+
+    headers = route.calls.last.request.headers
+    assert headers["X-Click"] == "https://www.deviantart.com/a/art/b"
+    assert headers["X-Attach"] == "https://images.invalid/p.jpg"
