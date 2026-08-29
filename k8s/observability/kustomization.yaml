@@ -4,7 +4,7 @@ kind: Kustomization
 namespace: dawatch
 
 resources:
-  - pushgateway.yaml
+  - ../pushgateway
   - prometheus.yaml
   - grafana.yaml
 

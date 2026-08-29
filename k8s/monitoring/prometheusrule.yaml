@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dawatch
+  namespace: dawatch
+  labels:
+    app.kubernetes.io/name: dawatch
+spec:
+  groups:
+    - name: dawatch
+      rules:
+        - alert: DawatchStale
+          # The failure that matters: a job that quietly stops running
+          # produces no errors and no notifications, and is otherwise
+          # invisible. Staleness is the only signal that catches it.
+          expr: time() - dawatch_last_success_timestamp_seconds > 172800
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "dawatch has not completed a clean run in over 48 hours"
+
+        - alert: DawatchErrors
+          expr: increase(dawatch_errors_total[1h]) > 0
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: "dawatch reported errors in the last hour"

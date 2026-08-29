@@ -5,6 +5,10 @@ namespace: dawatch
 
 resources:
   - ../../base
+  # The cluster already runs Prometheus Operator and Grafana, so prod brings
+  # only the Pushgateway plus the CRs that point the existing stack at it.
+  - ../../monitoring
+  - secret.yaml
 
 images:
   # Pin by digest in a real deployment: a mutable tag makes a rollback

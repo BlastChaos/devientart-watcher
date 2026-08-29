@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dawatch-pushgateway
+  namespace: dawatch
+  labels:
+    app.kubernetes.io/name: dawatch
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pushgateway
+  namespaceSelector:
+    matchNames:
+      - dawatch
+  endpoints:
+    - port: http
+      interval: 30s
+      # The CronJob pushes its own job/instance labels. Without this the
+      # scrape overwrites them with the ServiceMonitor's, and every metric
+      # collapses onto the Pushgateway's identity instead of dawatch's.
+      honorLabels: true

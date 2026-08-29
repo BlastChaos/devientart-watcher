@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dawatch
+
+# Wires dawatch into a cluster that already runs Prometheus Operator, rather
+# than standing up its own stack the way k8s/observability does. The
+# Pushgateway is still ours: the CronJob is too short-lived to be scraped.
+resources:
+  - ../pushgateway
+  - servicemonitor.yaml
+  - prometheusrule.yaml
