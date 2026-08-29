@@ -1,7 +1,7 @@
-# DeviantArt Daily Deviation Watcher
+# DeviantArt Watcher
 
-Polls the DeviantArt Daily Deviations feed on a schedule, works out which
-deviations it has not seen before, and pushes each one to your phone.
+Polls the deviations posted by the artists you watch, works out which ones it
+has not seen before, and pushes each one to your phone.
 
 Runs as a Kubernetes CronJob. Ships with metrics, a Grafana dashboard, and a
 staleness alert for the failure that actually matters: a scheduled job that
@@ -10,7 +10,7 @@ quietly stops running.
 ## How it works
 
 ```
-CronJob ─▶ dawatch run ─┬─▶ DeviantArt API   (client_credentials)
+CronJob ─▶ dawatch run ─┬─▶ DeviantArt API   (refresh_token grant)
                         ├─▶ SQLite on a PVC  (what has been seen)
                         ├─▶ ntfy             (your phone)
                         └─▶ Pushgateway ─▶ Prometheus ─▶ Grafana
@@ -21,13 +21,21 @@ CronJob ─▶ dawatch run ─┬─▶ DeviantArt API   (client_credentials)
 promises is tested against fakes, with no network, no clock, and no
 filesystem.
 
-## Two decisions worth explaining
+## Three decisions worth explaining
 
 **A deviation is marked seen only after its notification succeeds.** That
 gives at-least-once delivery: a crash between the two causes one duplicate on
 the next run. The reverse ordering gives at-most-once, where the same crash
 loses the deviation permanently and silently. A duplicate buzz is an
 annoyance; a missed deviation defeats the product.
+
+**The refresh token is seeded from OpenBao and rotated into SQLite.** The app
+prefers a token persisted in `token_cache` on the PVC and falls back to the
+`DAWATCH_REFRESH_TOKEN` environment seed. Any refresh token the endpoint
+returns is written back. DeviantArt does not document whether refresh tokens
+rotate on use, and this arrangement is correct either way — while leaving
+External Secrets a read-only sync, and degrading to the seed rather than to a
+browser prompt if the volume is lost.
 
 **An empty store is seeded, not notified.** A first deployment would otherwise
 fire twenty notifications at once, which is enough to make someone uninstall
@@ -40,17 +48,23 @@ overrides it.
 cd script
 cp .env.example .env       # add your DeviantArt app credentials and ntfy topic
 uv sync --all-groups
-uv run dawatch doctor      # verifies credentials, API, store and gateway
+uv run dawatch login       # browser consent; prints DAWATCH_REFRESH_TOKEN
+uv run dawatch doctor      # verifies credentials, scope, store and gateway
 uv run dawatch run --dry-run
 uv run dawatch run
 ```
+
+Put the printed refresh token in `.env` as `DAWATCH_REFRESH_TOKEN` before
+running anything else. `dawatch login` needs `http://localhost:8080/callback`
+registered as a redirect URI on your DeviantArt application.
 
 Install the [ntfy app](https://ntfy.sh/) on your phone and subscribe to the
 topic you set in `.env`. Treat the topic name as a secret: on the public
 ntfy.sh server, anyone who knows it can read your notifications.
 
 Register an application at
-https://www.deviantart.com/developers/apps to get a client ID and secret.
+https://www.deviantart.com/developers/apps to get a client ID and secret, and
+add `http://localhost:8080/callback` to its redirect URI whitelist.
 
 ## Quick start (Kubernetes)
 
@@ -68,12 +82,16 @@ overlay keeps the daily schedule and expects those to already exist.
 
 | Command | What it does |
 |---|---|
+| `dawatch login` | Authorize against your account; print a refresh token |
 | `dawatch run` | Poll once, notify what is new, exit |
 | `dawatch run --dry-run` | Show what would be sent; send and write nothing |
-| `dawatch run --date 2026-08-01` | Poll a specific day |
 | `dawatch run --no-seed` | Notify everything even on an empty store |
-| `dawatch seed` | Record today's feed as seen without notifying |
-| `dawatch doctor` | Check credentials, API, store and gateway |
+| `dawatch seed` | Record the current feed as seen without notifying |
+| `dawatch doctor` | Check credentials, scope, store and gateway |
+
+There is no `--date`. The watch feed is an offset-paged stream with no date
+parameter; each run pages back until it meets a deviation it has already seen,
+capped at five pages.
 
 Exit codes: `0` success, `1` transient or partial failure, `2` configuration
 failure. The CronJob's `backoffLimit` retries; a `2` will never succeed on
@@ -85,6 +103,7 @@ retry and tells you to fix the deployment.
 |---|---|---|
 | `DEVIANTART_CLIENT_ID` | — | Required. OAuth2 application ID |
 | `DEVIANTART_CLIENT_SECRET` | — | Required. OAuth2 application secret |
+| `DAWATCH_REFRESH_TOKEN` | — | Seed token from `dawatch login`. Expires after 3 months |
 | `DAWATCH_NTFY_TOPIC` | — | Required. ntfy topic to publish to |
 | `DAWATCH_NTFY_URL` | `https://ntfy.sh` | ntfy server |
 | `DAWATCH_DB_PATH` | `/data/dawatch.db` | SQLite location |
@@ -108,6 +127,12 @@ Metrics are pushed at the end of every run, successful or not, so a failing
 run still moves `dawatch_errors_total`. A push failure is logged and never
 fatal.
 
+The refresh token expires after three months, and DeviantArt offers no way to
+renew it without a human in a browser. That is the one scheduled failure this
+design cannot remove. It surfaces as `invalid_grant`, which exits **2** rather
+than 1 so `backoffLimit` stops retrying it, and then as the staleness alert
+below. The fix is one `dawatch login` and one write to OpenBao.
+
 The alert to wire up is staleness:
 
 ```
@@ -129,10 +154,5 @@ make image   # build the container
 Python 3.13 or newer. Dependencies and the virtualenv are managed by `uv`.
 
 ## Not implemented
-
-The "artists you watch" feed needs the OAuth2 authorization code flow — user
-consent in a browser and refresh-token storage — rather than the client
-credentials grant used here. It would arrive as a second `DeviationSource`
-without any change to the orchestration layer.
 
 There is no CI pipeline yet. `make lint && make test` is the gate.

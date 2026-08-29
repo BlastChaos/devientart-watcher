@@ -4,7 +4,9 @@ metadata:
   name: dawatch
   namespace: dawatch
 spec:
-  schedule: "*/5 * * * *"
+  # Hourly suits a watch feed: artists post through the day, and the paging
+  # rule makes a run with nothing new cost exactly one request.
+  schedule: "0 * * * *"
   jobTemplate:
     spec:
       template:
