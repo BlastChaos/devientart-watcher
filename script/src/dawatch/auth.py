@@ -1,8 +1,11 @@
-"""OAuth2 client credentials authentication.
+"""OAuth2 authentication, in two grants.
 
-This grant issues no refresh token, so expiry is handled by repeating the
-token request. Tokens are cached across process runs, because a scheduled
-one-shot job would otherwise authenticate on every single invocation.
+``client_credentials`` authenticates the application: it issues no refresh
+token, so expiry is handled by repeating the token request. ``refresh_token``
+authenticates the user, which is the only way to see who they watch.
+
+Both cache the access token across process runs, because a scheduled one-shot
+job would otherwise authenticate on every single invocation.
 """
 
 from datetime import UTC, datetime
@@ -11,7 +14,7 @@ from typing import Any, Protocol
 import httpx
 import structlog
 
-from dawatch.errors import AuthError
+from dawatch.errors import AuthError, ConfigError
 from dawatch.models import Token
 from dawatch.store import TokenCache
 
@@ -26,19 +29,15 @@ class TokenProvider(Protocol):
     def invalidate(self) -> None: ...
 
 
-class DeviantArtAuth:
-    """Supplies a bearer token, from cache when possible."""
+class _CachedTokenAuth:
+    """Access-token caching shared by every grant.
 
-    def __init__(
-        self,
-        http: httpx.Client,
-        client_id: str,
-        client_secret: str,
-        cache: TokenCache,
-    ) -> None:
-        self._http = http
-        self._client_id = client_id
-        self._client_secret = client_secret
+    Subclasses supply only ``_request_token``. The caching rules — in-process
+    memory, then the persistent cache, then the network — are identical
+    regardless of how the token is obtained.
+    """
+
+    def __init__(self, cache: TokenCache) -> None:
         self._cache = cache
         self._current: Token | None = None
         self._force_refresh: bool = False
@@ -76,6 +75,28 @@ class DeviantArtAuth:
         self._force_refresh = True
 
     def _request_token(self, now: datetime) -> Token:
+        raise NotImplementedError
+
+
+class DeviantArtAuth(_CachedTokenAuth):
+    """Supplies a bearer token for the application itself.
+
+    This grant has no user, so it cannot read any user-scoped feed.
+    """
+
+    def __init__(
+        self,
+        http: httpx.Client,
+        client_id: str,
+        client_secret: str,
+        cache: TokenCache,
+    ) -> None:
+        super().__init__(cache)
+        self._http = http
+        self._client_id = client_id
+        self._client_secret = client_secret
+
+    def _request_token(self, now: datetime) -> Token:
         try:
             response = self._http.post(
                 TOKEN_URL,
@@ -101,3 +122,91 @@ class DeviantArtAuth:
             return Token.from_response(payload, now)
         except (ValueError, KeyError, TypeError) as exc:
             raise AuthError("Token endpoint returned a malformed response") from exc
+
+
+class RefreshTokenAuth(_CachedTokenAuth):
+    """Supplies a bearer token that acts as the user, not the application.
+
+    The refresh token is read from the store first and the configured seed
+    second, so a token rotated by an earlier run always wins over the value
+    baked into the environment.
+    """
+
+    def __init__(
+        self,
+        http: httpx.Client,
+        client_id: str,
+        client_secret: str,
+        cache: TokenCache,
+        seed_refresh_token: str | None = None,
+    ) -> None:
+        super().__init__(cache)
+        self._http = http
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._seed = seed_refresh_token
+
+    def _request_token(self, now: datetime) -> Token:
+        refresh_token = self._cache.load_refresh_token() or self._seed
+        if not refresh_token:
+            raise ConfigError(
+                "No refresh token available. Run 'dawatch login' and store the "
+                "result as DAWATCH_REFRESH_TOKEN."
+            )
+
+        try:
+            response = self._http.post(
+                TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "refresh_token": refresh_token,
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise AuthError(f"Could not reach the token endpoint: {type(exc).__name__}") from exc
+
+        if response.status_code != httpx.codes.OK:
+            self._raise_for_rejection(response)
+
+        try:
+            payload: dict[str, Any] = response.json()
+            token = Token.from_response(payload, now)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AuthError("Token endpoint returned a malformed response") from exc
+
+        rotated = payload.get("refresh_token")
+        if isinstance(rotated, str) and rotated and rotated != refresh_token:
+            self._cache.save_refresh_token(rotated)
+            log.info("token.refresh_token_rotated")
+
+        return token
+
+    @staticmethod
+    def _raise_for_rejection(response: httpx.Response) -> None:
+        """Separate a dead refresh token from every other rejection.
+
+        A refresh token expires after three months and cannot be revived by
+        retrying, so it has to surface as a configuration failure and stop the
+        CronJob's backoffLimit. Only the 'error' field is read: the rest of
+        the body can echo credentials.
+        """
+        error_code = ""
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                error_code = str(body.get("error", ""))
+        except ValueError:
+            pass
+
+        if error_code == "invalid_grant":
+            raise ConfigError(
+                "The refresh token has expired or been revoked. Run 'dawatch login' "
+                "and store the new DAWATCH_REFRESH_TOKEN."
+            )
+
+        raise AuthError(
+            f"Token endpoint rejected the refresh grant (HTTP {response.status_code}). "
+            f"Check DEVIANTART_CLIENT_ID and DEVIANTART_CLIENT_SECRET."
+        )

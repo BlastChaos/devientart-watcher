@@ -6,8 +6,8 @@ import pytest
 import respx
 import time_machine
 
-from dawatch.auth import TOKEN_URL, DeviantArtAuth
-from dawatch.errors import AuthError
+from dawatch.auth import TOKEN_URL, DeviantArtAuth, RefreshTokenAuth
+from dawatch.errors import AuthError, ConfigError
 from dawatch.models import Token
 from dawatch.store import InMemoryStore, TokenCache
 
@@ -178,3 +178,129 @@ def test_transport_failure_raises_auth_error(auth: DeviantArtAuth) -> None:
 
     with pytest.raises(AuthError):
         auth.token()
+
+
+REFRESH_RESPONSE = {
+    "status": "success",
+    "access_token": "fresh-token",
+    "token_type": "Bearer",
+    "expires_in": 3600,
+    "refresh_token": "rotated-refresh",
+}
+
+
+def build_refresh_auth(cache: InMemoryStore, seed: str | None = "seed-refresh") -> Any:
+    return RefreshTokenAuth(
+        httpx.Client(),
+        client_id="id",
+        client_secret="secret",
+        cache=cache,
+        seed_refresh_token=seed,
+    )
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_sends_the_refresh_token_grant(cache: InMemoryStore) -> None:
+    route = respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=REFRESH_RESPONSE))
+
+    assert build_refresh_auth(cache).token() == "fresh-token"
+
+    body = route.calls[0].request.content.decode()
+    assert "grant_type=refresh_token" in body
+    assert "refresh_token=seed-refresh" in body
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_prefers_a_stored_refresh_token_over_the_seed(cache: InMemoryStore) -> None:
+    """The store holds the rotated token; the seed is only a bootstrap."""
+    cache.save_refresh_token("stored-refresh")
+    route = respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=REFRESH_RESPONSE))
+
+    build_refresh_auth(cache).token()
+
+    assert "refresh_token=stored-refresh" in route.calls[0].request.content.decode()
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_persists_a_rotated_refresh_token(cache: InMemoryStore) -> None:
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=REFRESH_RESPONSE))
+
+    build_refresh_auth(cache).token()
+
+    assert cache.load_refresh_token() == "rotated-refresh"
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_keeps_the_current_token_when_none_is_returned(cache: InMemoryStore) -> None:
+    """DeviantArt does not document whether refresh tokens rotate.
+
+    A response without a refresh_token must leave the existing one intact
+    rather than clearing it.
+    """
+    cache.save_refresh_token("stored-refresh")
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=TOKEN_RESPONSE))
+
+    build_refresh_auth(cache).token()
+
+    assert cache.load_refresh_token() == "stored-refresh"
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_expired_refresh_token_raises_config_error(cache: InMemoryStore) -> None:
+    """invalid_grant can never succeed on retry, so it is a config failure.
+
+    Exit 1 would let backoffLimit retry a token that is dead for three months.
+    """
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
+
+    with pytest.raises(ConfigError, match="dawatch login"):
+        build_refresh_auth(cache).token()
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_other_rejections_raise_auth_error(cache: InMemoryStore) -> None:
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(503, text="upstream down"))
+
+    with pytest.raises(AuthError):
+        build_refresh_auth(cache).token()
+
+
+@time_machine.travel(NOW, tick=False)
+def test_missing_refresh_token_raises_config_error(cache: InMemoryStore) -> None:
+    with pytest.raises(ConfigError, match="dawatch login"):
+        build_refresh_auth(cache, seed=None).token()
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_refresh_auth_reuses_a_cached_access_token(cache: InMemoryStore) -> None:
+    """Caching behaviour is inherited from the base and must not regress."""
+    cache.save_token(Token(access_token="cached", expires_at=NOW + timedelta(hours=1)))
+    route = respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json=REFRESH_RESPONSE))
+
+    assert build_refresh_auth(cache).token() == "cached"
+    assert route.call_count == 0
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_refresh_auth_transport_failure_raises_auth_error(cache: InMemoryStore) -> None:
+    respx.post(TOKEN_URL).mock(side_effect=httpx.ConnectError("boom"))
+
+    with pytest.raises(AuthError):
+        build_refresh_auth(cache).token()
+
+
+@time_machine.travel(NOW, tick=False)
+@respx.mock
+def test_refresh_auth_malformed_response_raises_auth_error(cache: InMemoryStore) -> None:
+    respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, json={"no": "token"}))
+
+    with pytest.raises(AuthError):
+        build_refresh_auth(cache).token()
