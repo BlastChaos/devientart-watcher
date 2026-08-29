@@ -1,3 +1,5 @@
+import base64
+import hashlib
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -11,12 +13,13 @@ from dawatch.login import (
     SCOPE,
     build_authorize_url,
     exchange_code,
+    generate_pkce_pair,
     validate_callback,
 )
 
 
 def test_authorize_url_carries_the_required_parameters() -> None:
-    url = build_authorize_url(client_id="12345", state="abc123")
+    url = build_authorize_url(client_id="12345", state="abc123", code_challenge="chal")
 
     query = parse_qs(urlparse(url).query)
     assert query["client_id"] == ["12345"]
@@ -24,6 +27,41 @@ def test_authorize_url_carries_the_required_parameters() -> None:
     assert query["redirect_uri"] == [REDIRECT_URI]
     assert query["scope"] == [SCOPE]
     assert query["state"] == ["abc123"]
+
+
+def test_authorize_url_carries_the_pkce_challenge() -> None:
+    """DeviantArt is an OAuth 2.1 provider: PKCE is mandatory, S256 only.
+
+    Omitting these is what makes /oauth2/authorize answer invalid_request.
+    """
+    url = build_authorize_url(client_id="12345", state="abc123", code_challenge="the-challenge")
+
+    query = parse_qs(urlparse(url).query)
+    assert query["code_challenge"] == ["the-challenge"]
+    assert query["code_challenge_method"] == ["S256"]
+
+
+def test_pkce_pair_verifier_is_within_the_permitted_length() -> None:
+    """The spec allows 43-128 characters; DeviantArt enforces it."""
+    verifier, _ = generate_pkce_pair()
+
+    assert 43 <= len(verifier) <= 128
+
+
+def test_pkce_challenge_is_the_base64url_sha256_of_the_verifier() -> None:
+    verifier, challenge = generate_pkce_pair()
+
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .decode("ascii")
+        .rstrip("=")
+    )
+    assert challenge == expected
+    assert "=" not in challenge
+
+
+def test_pkce_pair_is_different_every_time() -> None:
+    assert generate_pkce_pair()[0] != generate_pkce_pair()[0]
 
 
 @respx.mock
@@ -41,7 +79,7 @@ def test_exchange_code_returns_the_refresh_token() -> None:
     )
 
     with httpx.Client() as http:
-        assert exchange_code(http, "id", "secret", "the-code") == "refresh-xyz"
+        assert exchange_code(http, "id", "secret", "the-code", "the-verifier") == "refresh-xyz"
 
 
 @respx.mock
@@ -53,11 +91,12 @@ def test_exchange_code_sends_the_authorization_code_grant() -> None:
     )
 
     with httpx.Client() as http:
-        exchange_code(http, "id", "secret", "the-code")
+        exchange_code(http, "id", "secret", "the-code", "the-verifier")
 
     body = route.calls[0].request.content.decode()
     assert "grant_type=authorization_code" in body
     assert "code=the-code" in body
+    assert "code_verifier=the-verifier" in body
 
 
 @respx.mock
@@ -68,7 +107,7 @@ def test_exchange_code_without_a_refresh_token_is_a_config_error() -> None:
     )
 
     with httpx.Client() as http, pytest.raises(ConfigError, match="refresh token"):
-        exchange_code(http, "id", "secret", "the-code")
+        exchange_code(http, "id", "secret", "the-code", "the-verifier")
 
 
 @respx.mock
@@ -76,7 +115,7 @@ def test_rejected_code_raises_auth_error() -> None:
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
 
     with httpx.Client() as http, pytest.raises(AuthError):
-        exchange_code(http, "id", "secret", "the-code")
+        exchange_code(http, "id", "secret", "the-code", "the-verifier")
 
 
 @respx.mock
@@ -84,7 +123,7 @@ def test_rejection_never_echoes_the_client_secret() -> None:
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(400, text="secret-in-body"))
 
     with httpx.Client() as http, pytest.raises(AuthError) as exc_info:
-        exchange_code(http, "id", "the-client-secret", "the-code")
+        exchange_code(http, "id", "the-client-secret", "the-code", "the-verifier")
 
     assert "the-client-secret" not in str(exc_info.value)
 
@@ -94,7 +133,7 @@ def test_transport_failure_raises_auth_error() -> None:
     respx.post(TOKEN_URL).mock(side_effect=httpx.ConnectError("no route to host"))
 
     with httpx.Client() as http, pytest.raises(AuthError):
-        exchange_code(http, "id", "secret", "the-code")
+        exchange_code(http, "id", "secret", "the-code", "the-verifier")
 
 
 @respx.mock
@@ -102,7 +141,7 @@ def test_malformed_response_raises_auth_error() -> None:
     respx.post(TOKEN_URL).mock(return_value=httpx.Response(200, text="not json at all"))
 
     with httpx.Client() as http, pytest.raises(AuthError):
-        exchange_code(http, "id", "secret", "the-code")
+        exchange_code(http, "id", "secret", "the-code", "the-verifier")
 
 
 def test_validate_callback_returns_the_code_when_state_matches() -> None:

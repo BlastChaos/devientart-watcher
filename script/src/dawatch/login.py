@@ -5,6 +5,8 @@ workstation, and handed to the operator to place in OpenBao. This module runs
 roughly once every three months and never inside the cluster.
 """
 
+import base64
+import hashlib
 import http.server
 import secrets
 import threading
@@ -28,13 +30,30 @@ CALLBACK_TIMEOUT_SECONDS = 300
 log = structlog.get_logger(__name__)
 
 
+def generate_pkce_pair() -> tuple[str, str]:
+    """Return a (code_verifier, code_challenge) pair for one consent attempt.
+
+    token_urlsafe(64) yields 86 characters, inside the 43-128 the spec allows.
+    """
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return verifier, challenge
+
+
 def build_authorize_url(
     client_id: str,
     state: str,
+    code_challenge: str,
     redirect_uri: str = REDIRECT_URI,
     scope: str = SCOPE,
 ) -> str:
-    """Return the URL the user must visit to grant consent."""
+    """Return the URL the user must visit to grant consent.
+
+    DeviantArt is an OAuth 2.1 provider, so PKCE is mandatory and S256 is the
+    only accepted method. Omitting the challenge makes /oauth2/authorize
+    answer invalid_request.
+    """
     query = urllib.parse.urlencode(
         {
             "response_type": "code",
@@ -42,6 +61,8 @@ def build_authorize_url(
             "redirect_uri": redirect_uri,
             "scope": scope,
             "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         }
     )
     return f"{AUTHORIZE_URL}?{query}"
@@ -52,6 +73,7 @@ def exchange_code(
     client_id: str,
     client_secret: str,
     code: str,
+    code_verifier: str,
     redirect_uri: str = REDIRECT_URI,
 ) -> str:
     """Trade an authorization code for a refresh token.
@@ -70,6 +92,7 @@ def exchange_code(
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "code": code,
+                "code_verifier": code_verifier,
                 "redirect_uri": redirect_uri,
             },
         )
@@ -133,6 +156,7 @@ def run_consent_flow(http_client: httpx.Client, client_id: str, client_secret: s
         AuthError: if the code cannot be exchanged.
     """
     expected_state = secrets.token_urlsafe(16)
+    code_verifier, code_challenge = generate_pkce_pair()
     _CallbackHandler.code = None
     _CallbackHandler.state = None
     _CallbackHandler.error = None
@@ -140,7 +164,7 @@ def run_consent_flow(http_client: httpx.Client, client_id: str, client_secret: s
     server = http.server.HTTPServer(("localhost", 8080), _CallbackHandler)
     server.timeout = CALLBACK_TIMEOUT_SECONDS
 
-    url = build_authorize_url(client_id, expected_state)
+    url = build_authorize_url(client_id, expected_state, code_challenge)
     print(f"Opening your browser to authorize dawatch.\nIf it does not open: {url}\n")
     threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
 
@@ -155,7 +179,7 @@ def run_consent_flow(http_client: httpx.Client, client_id: str, client_secret: s
         error=_CallbackHandler.error,
         expected_state=expected_state,
     )
-    return exchange_code(http_client, client_id, client_secret, code)
+    return exchange_code(http_client, client_id, client_secret, code, code_verifier)
 
 
 def validate_callback(
