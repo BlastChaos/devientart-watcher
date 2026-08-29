@@ -6,6 +6,7 @@ it goes into a header value.
 """
 
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -23,6 +24,20 @@ def _header_safe(value: str) -> str:
     title in Japanese still tells the reader something.
     """
     return value.encode("ascii", "backslashreplace").decode("ascii")
+
+
+# Characters legal in a URL, plus '%' so an already-encoded URL is not
+# encoded a second time on its way into the header.
+_URL_SAFE_CHARS = ":/?#[]@!$&'()*+,;=~-._%"
+
+
+def _url_safe(value: str) -> str:
+    """Percent-encode a URL for use as an HTTP header value.
+
+    Titles are backslash-escaped because a mangled title still reads. A URL
+    has to stay clickable, so it is percent-encoded instead.
+    """
+    return quote(value, safe=_URL_SAFE_CHARS)
 
 
 class Notifier(Protocol):
@@ -50,9 +65,9 @@ class NtfyNotifier:
             "X-Priority": "default",
         }
         if deviation.url:
-            headers["X-Click"] = deviation.url
+            headers["X-Click"] = _url_safe(deviation.url)
         if deviation.image_url:
-            headers["X-Attach"] = deviation.image_url
+            headers["X-Attach"] = _url_safe(deviation.image_url)
 
         body = f"New Daily Deviation by {deviation.author_name}"
 

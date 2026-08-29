@@ -132,3 +132,59 @@ def test_recording_notifier_can_be_told_to_fail() -> None:
         notifier.send(DEVIATION)
 
     assert notifier.sent == []
+
+
+NON_ASCII_URL_DEVIATION = Deviation.model_validate(
+    {
+        "deviationid": "NON-ASCII",
+        "title": "Cafe",
+        "url": "https://www.deviantart.com/user/art/Café-123",
+        "author": {"username": "artist"},
+        "preview": {"src": "https://images.invalid/ü.jpg"},
+    }
+)
+
+
+@respx.mock
+def test_non_ascii_url_does_not_break_header_encoding(notifier: NtfyNotifier) -> None:
+    """A URL with non-ASCII characters must not raise LocalProtocolError.
+
+    httpx encodes headers as latin-1. An unescaped non-ASCII URL makes it
+    refuse to build the request at all, which left the deviation unseen and
+    retried on every subsequent run.
+    """
+    route = respx.post(TOPIC_URL).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    notifier.send(NON_ASCII_URL_DEVIATION)
+
+    sent = route.calls[0].request
+    assert sent.headers["X-Click"] == "https://www.deviantart.com/user/art/Caf%C3%A9-123"
+
+
+@respx.mock
+def test_non_ascii_image_url_is_encoded(notifier: NtfyNotifier) -> None:
+    route = respx.post(TOPIC_URL).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    notifier.send(NON_ASCII_URL_DEVIATION)
+
+    sent = route.calls[0].request
+    assert sent.headers["X-Attach"] == "https://images.invalid/%C3%BC.jpg"
+
+
+@respx.mock
+def test_already_encoded_url_is_not_double_encoded(notifier: NtfyNotifier) -> None:
+    """A percent sign in an already-encoded URL must survive untouched."""
+    deviation = Deviation.model_validate(
+        {
+            "deviationid": "ENCODED",
+            "title": "Encoded",
+            "url": "https://www.deviantart.com/user/art/Caf%C3%A9-123",
+            "author": {"username": "artist"},
+        }
+    )
+    route = respx.post(TOPIC_URL).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    notifier.send(deviation)
+
+    sent = route.calls[0].request
+    assert sent.headers["X-Click"] == "https://www.deviantart.com/user/art/Caf%C3%A9-123"
