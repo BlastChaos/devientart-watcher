@@ -14,7 +14,7 @@ images:
   # Pin by digest in a real deployment: a mutable tag makes a rollback
   # ambiguous and lets an image change under you between runs.
   - name: dawatch
-    newTag: "0.1.0"
+    newTag: "0.1.1"
 
 patches:
   - path: patch-cronjob.yaml
